@@ -297,7 +297,7 @@ impl Game {
     fn sync(&mut self) {
         let mut input_line = String::new();
         io::stdin().read_line(&mut input_line).unwrap();
-        let inputs = input_line.split(" ").collect::<Vec<_>>();
+        let inputs = input_line.split(' ').collect::<Vec<_>>();
         let x = parse_input!(inputs[0], usize);
         let y = parse_input!(inputs[1], usize);
         self.me.pos = PlayerPos::Exact(Pos { y, x });
@@ -329,18 +329,14 @@ impl Game {
             panic!()
         };
         let next_pos = direction.apply(me_pos)?;
-        eprintln!("{:?} -> {} => {:?}", me_pos, direction, next_pos);
         if next_pos.x >= self.map.w || next_pos.y >= self.map.h {
             return Err(());
         }
-        eprintln!("goto {:?}", next_pos);
-        eprintln!("forbidden:\n{}", self.me.forbidden_map);
         if self.me.forbidden_map.get(next_pos.y, next_pos.x) {
             return Err(());
         }
         assert!(self.action.mov.is_none());
         self.action.mov = Some((direction.clone(), system.clone()));
-        eprintln!("MOVE: {}", direction.clone());
         Ok(())
     }
 
