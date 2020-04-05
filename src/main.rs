@@ -21,7 +21,7 @@ mod cooldown {
 }
 const MAX_LIFE: i32 = 6;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum Direction {
     N,
     E,
@@ -77,7 +77,7 @@ impl Direction {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum System {
     Torpedo,
     Sonar,
@@ -113,7 +113,7 @@ impl WeightMap {}
 // =======================================================================
 // Game data
 // =======================================================================
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct Map {
     h: usize,
     w: usize,
@@ -129,10 +129,10 @@ impl Map {
         }
     }
     fn set(&mut self, y: usize, x: usize, value: bool) {
-        self.data[y * MAP_SIZE + x] = value;
+        self.data[y * self.w + x] = value;
     }
     fn get(&self, y: usize, x: usize) -> bool {
-        self.data[y * MAP_SIZE + x]
+        self.data[y * self.w + x]
     }
     fn copy_from(&mut self, map: &Map) {
         self.data.copy_from_slice(&map.data);
@@ -154,30 +154,163 @@ impl Map {
             }
         }
         Ok(Pos {
-            y: i / MAP_SIZE,
-            x: i % MAP_SIZE,
+            y: i / self.h,
+            x: i % self.w,
         })
     }
 
-    fn eqAndNot(&mut self, map: &Map) {
+    fn eq_and_not(&mut self, map: &Map) {
         for (v, forbidden) in self.data.iter_mut().zip(map.data.iter()) {
-            if *forbidden {
+            *v = *v && !*forbidden;
+        }
+    }
+
+    fn eq_and(&mut self, map: &Map) {
+        for (v, allowed) in self.data.iter_mut().zip(map.data.iter()) {
+            if !*allowed {
                 *v = false;
             }
+        }
+    }
+
+    fn eq_or(&mut self, map: &Map) {
+        for (v, allowed) in self.data.iter_mut().zip(map.data.iter()) {
+            *v = *v || *allowed;
         }
     }
 
     fn invert(&mut self) {
         self.data.iter_mut().for_each(|v| *v = !*v);
     }
+
+    fn reset(&mut self) {
+        self.data.iter_mut().for_each(|v| *v = false);
+    }
+
+    fn sub_false_area_size(&self, start: &Pos) -> usize {
+        if self.get(start.y, start.x) {
+            return 0;
+        }
+        let mut map = Map::new(self.h, self.w);
+        map.set(start.y, start.x, true);
+
+        loop {
+            let mut changed = false;
+            for y in 0..self.h {
+                for x in 0..self.w {
+                    if !self.get(y, x) && !map.get(y, x) {
+                        let has_good_neigh = (x > 0 && map.get(y, x - 1))
+                            || (x < self.w - 1 && map.get(y, x + 1))
+                            || (y > 0 && map.get(y - 1, x))
+                            || (y < self.h - 1 && map.get(y + 1, x));
+                        if has_good_neigh {
+                            map.set(y, x, true);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+
+            if !changed {
+                break;
+            }
+        }
+
+        map.data
+            .iter()
+            .fold(0, |acc, i| if *i { acc + 1 } else { acc })
+    }
 }
+#[test]
+fn test_and() {
+    let mut map_a = Map::new(3, 3);
+    map_a.set(1, 1, true);
+    map_a.set(0, 1, true);
+    let mut map_b = Map::new(3, 3);
+    map_b.set(0, 1, true);
+    map_b.set(1, 2, true);
+    let mut map_c = Map::new(3, 3);
+    map_c.set(0, 1, true);
+    let mut map_anb = map_a.clone();
+    map_anb.eq_and(&map_b);
+    assert_eq!(map_anb, map_c);
+}
+#[test]
+fn test_and_not() {
+    let mut map_a = Map::new(3, 3);
+    map_a.set(1, 1, true);
+    map_a.set(0, 1, true);
+    let mut map_b = Map::new(3, 3);
+    map_b.set(0, 1, true);
+    map_b.set(1, 2, true);
+    let mut map_c = Map::new(3, 3);
+    map_c.set(1, 1, true);
+    let mut map_anb = map_a.clone();
+    map_anb.eq_and_not(&map_b);
+    assert_eq!(map_anb, map_c);
+}
+#[test]
+fn test_or() {
+    let mut map_a = Map::new(3, 3);
+    map_a.set(1, 1, true);
+    map_a.set(0, 1, true);
+    let mut map_b = Map::new(3, 3);
+    map_b.set(0, 1, true);
+    map_b.set(1, 2, true);
+    let mut map_c = Map::new(3, 3);
+    map_c.set(1, 1, true);
+    map_c.set(0, 1, true);
+    map_c.set(1, 2, true);
+    let mut map_anb = map_a.clone();
+    map_anb.eq_or(&map_b);
+    assert_eq!(map_anb, map_c);
+}
+#[test]
+fn test_sub_false_area_size_small() {
+    let mut map = Map::new(3, 3);
+    map.set(1, 0, true);
+    assert_eq!(map.sub_false_area_size(&Pos { y: 0, x: 0 }), 8);
+    assert_eq!(map.sub_false_area_size(&Pos { y: 1, x: 1 }), 8);
+    map.set(1, 1, true);
+    assert_eq!(map.sub_false_area_size(&Pos { y: 0, x: 0 }), 7);
+    assert_eq!(map.sub_false_area_size(&Pos { y: 2, x: 1 }), 7);
+    map.set(1, 2, true);
+    assert_eq!(map.sub_false_area_size(&Pos { y: 0, x: 0 }), 3);
+    assert_eq!(map.sub_false_area_size(&Pos { y: 2, x: 1 }), 3);
+}
+#[test]
+fn test_sub_false_area_size() {
+    let size = 15;
+    let mut map_big = Map::new(size, size);
+    for i in 0..size {
+        map_big.set(size / 2, i, true);
+    }
+    assert_eq!(
+        map_big.sub_false_area_size(&Pos { y: 0, x: 0 }),
+        size / 2 * size
+    );
+    assert_eq!(
+        map_big.sub_false_area_size(&Pos {
+            y: size - 1,
+            x: size - 1
+        }),
+        size / 2 * size
+    );
+    map_big.set(1, 1, true);
+    map_big.set(1, 2, true);
+    assert_eq!(
+        map_big.sub_false_area_size(&Pos { y: 0, x: 0 }),
+        size / 2 * size - 2
+    );
+}
+
 impl std::fmt::Display for Map {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut ret = vec![];
         for y in 0..self.h {
             let mut tmp = vec![];
             for x in 0..self.w {
-                if self.data[y * MAP_SIZE + x] {
+                if self.data[y * self.w + x] {
                     tmp.push('x');
                 } else {
                     tmp.push('.');
@@ -189,21 +322,21 @@ impl std::fmt::Display for Map {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct Pos {
     x: usize,
     y: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum PlayerPos {
     Exact(Pos),
     Area(Map),
 }
-#[derive(Debug, Clone)]
-struct Player {
+#[derive(Debug, Clone, PartialEq)]
+struct MePlayer {
     forbidden_map: Map,
-    pos: PlayerPos,
+    pos: Pos,
     life: i32,
     torpedo: usize,
     sonar: usize,
@@ -211,7 +344,35 @@ struct Player {
     mine: usize,
 }
 
-impl Player {
+impl MePlayer {
+    fn new(map: &Map) -> Self {
+        let mut pos_map = map.clone();
+        pos_map.invert();
+        Self {
+            forbidden_map: map.clone(),
+            pos: Pos { y: 0, x: 0 },
+            life: MAX_LIFE,
+            torpedo: cooldown::TORPEDO,
+            sonar: cooldown::SONAR,
+            silence: cooldown::SILENCE,
+            mine: cooldown::MINE,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct OppPlayer {
+    life: i32,
+    // TODO All those fields should be fuzzy values
+    forbidden_map: Map,
+    pos: PlayerPos,
+    torpedo: usize,
+    sonar: usize,
+    silence: usize,
+    mine: usize,
+}
+
+impl OppPlayer {
     fn new(map: &Map) -> Self {
         let mut pos_map = map.clone();
         pos_map.invert();
@@ -227,7 +388,7 @@ impl Player {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct Action {
     mov: Option<(Direction, System)>,
     surface: bool,
@@ -258,15 +419,15 @@ impl std::fmt::Display for Action {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct Game {
     // Static
     map: Map,
     my_id: usize,
 
     // Dynamic
-    me: Player,
-    opp: Player,
+    me: MePlayer,
+    opp: OppPlayer,
 
     // Next action
     action: Action,
@@ -279,8 +440,8 @@ struct Game {
 impl Game {
     fn new(map: Map, my_id: usize) -> Self {
         Self {
-            me: Player::new(&map),
-            opp: Player::new(&map),
+            me: MePlayer::new(&map),
+            opp: OppPlayer::new(&map),
             map,
             my_id,
             action: Action::new(),
@@ -300,7 +461,7 @@ impl Game {
         let inputs = input_line.split(' ').collect::<Vec<_>>();
         let x = parse_input!(inputs[0], usize);
         let y = parse_input!(inputs[1], usize);
-        self.me.pos = PlayerPos::Exact(Pos { y, x });
+        self.me.pos = Pos { y, x };
         self.me.life = parse_input!(inputs[2], i32);
         self.opp.life = parse_input!(inputs[3], i32);
         self.me.torpedo = parse_input!(inputs[4], usize);
@@ -322,12 +483,8 @@ impl Game {
         self.action = Action::new();
     }
 
-    fn move_to(&mut self, direction: &Direction, system: &System) -> Result<(), ()> {
-        let me_pos = if let PlayerPos::Exact(pos) = &self.me.pos {
-            pos
-        } else {
-            panic!()
-        };
+    fn can_move_to(&mut self, direction: &Direction) -> Result<(), ()> {
+        let me_pos = &self.me.pos;
         let next_pos = direction.apply(me_pos)?;
         if next_pos.x >= self.map.w || next_pos.y >= self.map.h {
             return Err(());
@@ -335,6 +492,11 @@ impl Game {
         if self.me.forbidden_map.get(next_pos.y, next_pos.x) {
             return Err(());
         }
+        Ok(())
+    }
+
+    fn move_to(&mut self, direction: &Direction, system: &System) -> Result<(), ()> {
+        self.can_move_to(direction)?;
         assert!(self.action.mov.is_none());
         self.action.mov = Some((direction.clone(), system.clone()));
         Ok(())
@@ -382,20 +544,55 @@ impl Ai {
     }
 }
 impl Ai {
-    fn plan_actions(&mut self, game: &mut Game) {
-        // Manage basic movement
-        let dirs = [Direction::E, Direction::N, Direction::W, Direction::S];
-        let recharge = System::Torpedo;
-        let mut moved = false;
-        for dir in dirs.iter() {
-            if let Ok(_) = game.move_to(dir, &recharge) {
-                moved = true;
-                break;
+    fn get_best_dir(&mut self, game: &mut Game, dirs: &[Direction]) -> Direction {
+        let (best_index, _) = dirs
+            .iter()
+            .enumerate()
+            .map(|(i, d)| {
+                let next_pos = d.apply(&game.me.pos).unwrap();
+                let score = game.me.forbidden_map.sub_false_area_size(&next_pos);
+                eprintln!("DIR {}, next_pos {:?}, score {}", d, next_pos, score);
+                (i, score)
+            })
+            .max_by(|(_, max), (_, v)| max.cmp(v))
+            .unwrap();
+        eprintln!("{:?}, {}", dirs, best_index);
+        dirs[best_index].clone()
+    }
+
+    fn plan_move(&mut self, game: &mut Game, recharge: &System) {
+        let dirs = vec![Direction::E, Direction::N, Direction::W, Direction::S];
+        let good_dirs: Vec<_> = dirs
+            .into_iter()
+            .filter(|d| game.can_move_to(d).is_ok())
+            .collect();
+        eprintln!("Possible directions: {:?}", good_dirs);
+
+        let dir = match good_dirs.len() {
+            0 => {
+                self.dir = None;
+                return game.surface();
             }
-        }
-        if !moved {
-            game.surface();
-        }
+            1 => good_dirs[0].clone(),
+            2 => self.get_best_dir(game, &good_dirs[..]),
+            _ => {
+                if let Some(dir) = &self.dir {
+                    if good_dirs.contains(&dir) {
+                        dir.clone()
+                    } else {
+                        good_dirs[0].clone()
+                    }
+                } else {
+                    good_dirs[0].clone()
+                }
+            }
+        };
+        game.move_to(&dir, recharge).unwrap();
+        self.dir = Some(dir);
+    }
+
+    fn plan_actions(&mut self, game: &mut Game) {
+        self.plan_move(game, &System::Torpedo);
 
         // Manage shooting
         if game.me.torpedo == 0 {}
