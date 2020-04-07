@@ -329,11 +329,6 @@ struct Pos {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum PlayerPos {
-    Exact(Pos),
-    Area(Map),
-}
-#[derive(Debug, Clone, PartialEq)]
 struct MePlayer {
     forbidden_map: Map,
     pos: Pos,
@@ -361,11 +356,17 @@ impl MePlayer {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+enum OppPos {
+    Exact(Pos),
+    Area(Map),
+}
+
+#[derive(Debug, Clone, PartialEq)]
 struct OppPlayer {
     life: i32,
     // TODO All those fields should be fuzzy values
-    forbidden_map: Map,
-    pos: PlayerPos,
+    forbidden_map: Option<Map>,
+    pos: OppPos,
     torpedo: usize,
     sonar: usize,
     silence: usize,
@@ -377,8 +378,8 @@ impl OppPlayer {
         let mut pos_map = map.clone();
         pos_map.invert();
         Self {
-            forbidden_map: map.clone(),
-            pos: PlayerPos::Area(pos_map),
+            forbidden_map: None,
+            pos: OppPos::Area(pos_map),
             life: MAX_LIFE,
             torpedo: cooldown::TORPEDO,
             sonar: cooldown::SONAR,
@@ -389,33 +390,26 @@ impl OppPlayer {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct Action {
-    mov: Option<(Direction, System)>,
-    surface: bool,
-    torpedo: Option<Pos>,
-}
-impl Action {
-    fn new() -> Self {
-        Self {
-            mov: None,
-            surface: false,
-            torpedo: None,
-        }
-    }
+enum Action {
+    Move(Direction, System),
+    Surface,
+    Torpedo(Pos),
+    Sonar(usize),
+    Silence(Direction, usize),
 }
 impl std::fmt::Display for Action {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut ret = vec![];
-        if let Some((dir, sys)) = &self.mov {
-            ret.push(format!("MOVE {} {}", dir, sys));
-        }
-        if self.surface {
-            ret.push("SURFACE".to_string());
-        }
-        if let Some(pos) = &self.torpedo {
-            ret.push(format!("TORPEDO {} {}", pos.x, pos.y));
-        }
-        write!(f, "{}", ret.join(" | "))
+        write!(
+            f,
+            "{}",
+            match self {
+                Action::Move(dir, sys) => format!("MOVE {} {}", dir, sys),
+                Action::Surface => format!("SURFACE"),
+                Action::Torpedo(Pos { y, x }) => format!("TORPEDO {} {}", x, y),
+                Action::Sonar(sector) => format!("SONAR {}", sector),
+                Action::Silence(dir, dist) => format!("SILENCE {} {}", dir, dist),
+            }
+        )
     }
 }
 
@@ -430,7 +424,7 @@ struct Game {
     opp: OppPlayer,
 
     // Next action
-    action: Action,
+    actions: Vec<Action>,
 }
 
 // =======================================================================
@@ -444,7 +438,7 @@ impl Game {
             opp: OppPlayer::new(&map),
             map,
             my_id,
-            action: Action::new(),
+            actions: vec![],
         }
     }
 
@@ -455,6 +449,7 @@ impl Game {
 
 // Gameplay
 impl Game {
+    fn update_opponent(&mut self, line: &str) {}
     fn sync(&mut self) {
         let mut input_line = String::new();
         io::stdin().read_line(&mut input_line).unwrap();
@@ -476,11 +471,13 @@ impl Game {
         let mut input_line = String::new();
         io::stdin().read_line(&mut input_line).unwrap();
         let sonar_result = input_line.trim().to_string();
+
         let mut input_line = String::new();
         io::stdin().read_line(&mut input_line).unwrap();
         let opponent_orders = input_line.trim_end().to_string();
+        self.update_opponent(&opponent_orders);
 
-        self.action = Action::new();
+        self.actions = vec![];
     }
 
     fn can_move_to(&mut self, direction: &Direction) -> Result<(), ()> {
@@ -497,28 +494,34 @@ impl Game {
 
     fn move_to(&mut self, direction: &Direction, system: &System) -> Result<(), ()> {
         self.can_move_to(direction)?;
-        assert!(self.action.mov.is_none());
-        self.action.mov = Some((direction.clone(), system.clone()));
+        self.actions
+            .push(Action::Move(direction.clone(), system.clone()));
         Ok(())
     }
 
     fn surface(&mut self) {
-        self.action.surface = true;
+        self.actions.push(Action::Surface);
     }
 
     fn torpedo(&mut self, pos: Pos) -> Result<(), ()> {
         if self.me.torpedo > 0 {
             return Err(());
         }
-        assert!(self.action.torpedo.is_none());
-        self.action.torpedo = Some(pos);
+        self.actions.push(Action::Torpedo(pos));
         Ok(())
     }
 
     fn commit(&mut self) {
-        println!("{}", self.action);
+        println!(
+            "{}",
+            self.actions
+                .iter()
+                .map(|a| a.to_string())
+                .collect::<Vec<_>>()
+                .join(" | ")
+        );
 
-        if self.action.surface {
+        if self.actions.contains(&Action::Surface) {
             self.me.forbidden_map.copy_from(&self.map);
         }
     }
