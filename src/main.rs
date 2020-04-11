@@ -763,8 +763,9 @@ impl Game {
                     match self.last_turn.opp_life - self.opp.life {
                         1 => {
                             if let OppPos::Area(map) = &mut self.opp.pos {
-                                map.eq_and(&self.map.square(&pos));
-                                map.set(pos.y, pos.x, false);
+                                let mut square_map = self.map.square(&pos);
+                                square_map.set(pos.y, pos.x, false);
+                                map.eq_and(&square_map);
                             }
                         }
                         _ => self.opp.pos = OppPos::Exact(pos.clone()),
