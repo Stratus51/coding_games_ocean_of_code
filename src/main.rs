@@ -335,6 +335,20 @@ impl Map {
         self.data.copy_from_slice(&map.data);
     }
 
+    fn square(&mut self, pos: &Pos) -> Map {
+        let min_x = if pos.x > 0 { pos.x - 1 } else { 0 };
+        let min_y = if pos.y > 0 { pos.y - 1 } else { 0 };
+        let max_x = if pos.x < self.w - 1 { pos.x + 1 } else { 0 };
+        let max_y = if pos.y < self.h - 1 { pos.y + 1 } else { 0 };
+        let mut map = Map::new(self.h, self.w);
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                map.set(y, x, true);
+            }
+        }
+        map
+    }
+
     fn nb_false(&self) -> usize {
         self.data.iter().map(|v| (!*v) as usize).sum()
     }
@@ -633,6 +647,24 @@ fn parse_action_list(line: &str) -> Vec<Action> {
 }
 
 // -----------------------------------------------------------------------
+// LastTurn
+// -----------------------------------------------------------------------
+#[derive(Debug, Clone, PartialEq)]
+struct LastTurn {
+    opp_life: i32,
+    torpedo: Option<Pos>,
+}
+
+impl LastTurn {
+    fn new() -> Self {
+        Self {
+            opp_life: MAX_LIFE,
+            torpedo: None,
+        }
+    }
+}
+
+// -----------------------------------------------------------------------
 // Game
 // -----------------------------------------------------------------------
 #[derive(Debug, Clone, PartialEq)]
@@ -647,6 +679,9 @@ struct Game {
 
     // Next action
     actions: Vec<Action>,
+
+    // Last turn state
+    last_turn: LastTurn,
 }
 
 // =======================================================================
@@ -661,6 +696,7 @@ impl Game {
             map,
             my_id,
             actions: vec![],
+            last_turn: LastTurn::new(),
         }
     }
 
@@ -722,6 +758,19 @@ impl Game {
                     self.opp.pos = pos;
                 }
             }
+            if let Some(pos) = &self.last_turn.torpedo {
+                if self.last_turn.opp_life != self.opp.life {
+                    match self.last_turn.opp_life - self.opp.life {
+                        1 => {
+                            if let OppPos::Area(map) = &mut self.opp.pos {
+                                map.eq_and(&self.map.square(&pos));
+                                map.set(pos.y, pos.x, false);
+                            }
+                        }
+                        _ => self.opp.pos = OppPos::Exact(pos.clone()),
+                    }
+                }
+            }
         }
         eprintln!("Opponent position:\n{}", self.opp.pos);
     }
@@ -733,8 +782,6 @@ impl Game {
         let y = parse_input!(inputs[1], usize);
         self.me.pos = Pos { y, x };
         self.me.life = parse_input!(inputs[2], i32);
-        // TODO Watch opp.life changes to update opp position.
-        // TODO Requires a memory of the last torpedo position.
         self.opp.life = parse_input!(inputs[3], i32);
         self.me.torpedo = parse_input!(inputs[4], usize);
         self.me.sonar = parse_input!(inputs[5], usize);
@@ -755,6 +802,7 @@ impl Game {
         self.update_opponent(&opponent_orders);
 
         self.actions = vec![];
+        self.last_turn = LastTurn::new();
     }
 
     fn can_move_to(&mut self, direction: &Direction) -> Result<(), ()> {
@@ -786,6 +834,7 @@ impl Game {
         if self.me.torpedo > 0 {
             return Err(());
         }
+        self.last_turn.torpedo = Some(pos.clone());
         self.actions.push(Action::Torpedo(pos));
         Ok(())
     }
