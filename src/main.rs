@@ -14,8 +14,9 @@ macro_rules! parse_input {
 // Defines
 // =======================================================================
 const MAP_NB_REGION: usize = 3;
-const MAP_REGION_SIZE: usize = 5;
-const MAP_SIZE: usize = MAP_NB_REGION * MAP_REGION_SIZE;
+const SECTOR_SIZE: usize = 5;
+const MAP_SIDE_SIZE: usize = MAP_NB_REGION * SECTOR_SIZE;
+const NB_SECTORS: usize = 9;
 mod cooldown {
     pub const TORPEDO: usize = 3;
     pub const SONAR: usize = 4;
@@ -27,7 +28,7 @@ const MAX_LIFE: i32 = 6;
 // -----------------------------------------------------------------------
 // Direction
 // -----------------------------------------------------------------------
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Copy)]
 enum Direction {
     N,
     E,
@@ -97,7 +98,7 @@ impl Direction {
 // -----------------------------------------------------------------------
 // System
 // -----------------------------------------------------------------------
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Copy)]
 enum System {
     Torpedo,
     Sonar,
@@ -133,6 +134,195 @@ impl System {
 // =======================================================================
 // Tools
 // =======================================================================
+// -----------------------------------------------------------------------
+// NewMap
+// -----------------------------------------------------------------------
+fn nb_true_bits(n: u16) -> u8 {
+    let mut ret = 0;
+    for i in 0..16 {
+        if (n >> i) & 0x01 == 1 {
+            ret += 1;
+        }
+    }
+    ret
+}
+fn nb_false_bits(n: u16) -> u8 {
+    let mut ret = 0;
+    for i in 0..16 {
+        if (n >> i) & 0x01 == 0 {
+            ret += 1;
+        }
+    }
+    ret
+}
+static mut TRUE_BITS: [u8; 128] = [0; 128];
+static mut FALSE_BITS: [u8; 128] = [0; 128];
+// TODO Add init to main
+unsafe fn init_maps() {
+    for n in 0u16..128 {
+        TRUE_BITS[n as usize] = nb_true_bits(n);
+        FALSE_BITS[n as usize] = nb_false_bits(n);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Copy)]
+struct NewMap {
+    data: [u16; MAP_SIDE_SIZE],
+}
+
+impl NewMap {
+    const fn new() -> Self {
+        Self {
+            data: [0; MAP_SIDE_SIZE],
+        }
+    }
+    fn set(&mut self, pos: Pos, value: bool) {
+        self.data[pos.y] &= !(1 << (pos.x as u16));
+        self.data[pos.y] |= (value as u16) << (pos.x as u16);
+    }
+    fn get(&self, pos: Pos) -> bool {
+        self.data[pos.y] & (1 << (pos.x as u16)) != 0
+    }
+    fn copy_from(&mut self, map: &NewMap) {
+        self.data.copy_from_slice(&map.data);
+    }
+
+    fn shift(&mut self, dir: &Direction, n: usize) {
+        match dir {
+            Direction::N => {
+                for i in 0..self.data.len() - n {
+                    self.data[i] = self.data[i + n];
+                }
+                for i in self.data.len() - n..self.data.len() {
+                    self.data[i] = 0;
+                }
+            }
+            Direction::S => {
+                for i in (n..self.data.len()).rev() {
+                    self.data[i] = self.data[i - n];
+                }
+                for i in 0..n {
+                    self.data[i] = 0;
+                }
+            }
+            Direction::E => self.data.iter_mut().for_each(|d| *d >>= n),
+            Direction::W => self.data.iter_mut().for_each(|d| *d <<= n),
+        }
+    }
+
+    fn ipos_shift(&mut self, pos_shift: IPos) -> Self {
+        let mut ret = self.clone();
+        if pos_shift.y < 0 {
+            ret.shift(&Direction::N, -pos_shift.y as usize);
+        } else if pos_shift.y > 0 {
+            ret.shift(&Direction::S, pos_shift.y as usize);
+        }
+        if pos_shift.x < 0 {
+            ret.shift(&Direction::W, -pos_shift.x as usize);
+        } else if pos_shift.x > 0 {
+            ret.shift(&Direction::E, pos_shift.x as usize);
+        }
+        ret
+    }
+
+    fn first_match(&self, value: bool) -> Result<Pos, ()> {
+        if value {
+            for (y, d) in self.data.iter().enumerate() {
+                if *d != 0x7F {
+                    for x in 0..self.data.len() {
+                        if (*d >> x) & 0x01 == 0 {
+                            return Ok(Pos { y, x });
+                        }
+                    }
+                }
+            }
+        } else {
+            for (y, d) in self.data.iter().enumerate() {
+                if *d != 0x00 {
+                    for x in 0..self.data.len() {
+                        if (*d >> x) & 0x01 == 1 {
+                            return Ok(Pos { y, x });
+                        }
+                    }
+                }
+            }
+        }
+        Err(())
+    }
+
+    fn count(&self, value: bool) -> usize {
+        unsafe {
+            if value {
+                self.data
+                    .iter()
+                    .map(|d| TRUE_BITS[*d as usize] as usize)
+                    .sum()
+            } else {
+                self.data
+                    .iter()
+                    .map(|d| FALSE_BITS[*d as usize] as usize)
+                    .sum()
+            }
+        }
+    }
+
+    fn compose(&self, map: &NewMap, map_offset: &Pos) -> NewMap {
+        let mut ret = NewMap::new();
+        for y in 0..MAP_SIDE_SIZE {
+            for x in 0..MAP_SIDE_SIZE {
+                let pos = Pos { x, y };
+                if self.get(pos) {
+                    ret |= map.clone().ipos_shift(pos.isub(map_offset));
+                }
+            }
+        }
+        ret
+    }
+}
+
+impl std::ops::BitOr for NewMap {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self {
+        let mut ret = Self::new();
+        for (i, d) in ret.data.iter_mut().enumerate() {
+            *d = self.data[i] | rhs.data[i];
+        }
+        ret
+    }
+}
+impl std::ops::BitOrAssign for NewMap {
+    fn bitor_assign(&mut self, rhs: Self) {
+        *self = *self | rhs
+    }
+}
+
+impl std::ops::BitAnd for NewMap {
+    type Output = Self;
+
+    fn bitand(self, rhs: Self) -> Self {
+        let mut ret = Self::new();
+        for (i, d) in ret.data.iter_mut().enumerate() {
+            *d = self.data[i] & rhs.data[i];
+        }
+        ret
+    }
+}
+impl std::ops::BitAndAssign for NewMap {
+    fn bitand_assign(&mut self, rhs: Self) {
+        *self = *self & rhs
+    }
+}
+
+impl std::ops::Not for NewMap {
+    type Output = Self;
+
+    fn not(mut self) -> Self {
+        self.data.iter_mut().for_each(|d| *d = !*d);
+        self
+    }
+}
+
 // -----------------------------------------------------------------------
 // Map
 // -----------------------------------------------------------------------
@@ -496,13 +686,10 @@ impl std::fmt::Display for Map {
     }
 }
 
-// =======================================================================
-// Game data
-// =======================================================================
 // -----------------------------------------------------------------------
 // Pos
 // -----------------------------------------------------------------------
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Copy)]
 struct Pos {
     x: usize,
     y: usize,
@@ -511,6 +698,194 @@ impl std::fmt::Display for Pos {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "[{};{}]", self.x, self.y)
     }
+}
+
+impl std::ops::Sub for Pos {
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self {
+        Pos {
+            x: self.x - rhs.x,
+            y: self.y - rhs.y,
+        }
+    }
+}
+
+impl Pos {
+    fn dist(&self, rhs: &Pos) -> usize {
+        ((self.x as isize - rhs.x as isize).abs() + (self.y as isize - rhs.y as isize).abs())
+            as usize
+    }
+    fn isub(&self, rhs: &Self) -> IPos {
+        IPos {
+            x: self.x as isize - rhs.x as isize,
+            y: self.y as isize - rhs.y as isize,
+        }
+    }
+}
+
+struct IPos {
+    x: isize,
+    y: isize,
+}
+
+// =======================================================================
+// Game defines
+// =======================================================================
+#[derive(Debug, Clone, PartialEq)]
+struct OffCenteredMap {
+    map: NewMap,
+    offset: Pos,
+}
+impl OffCenteredMap {
+    const fn new() -> Self {
+        Self {
+            map: NewMap::new(),
+            offset: Pos { y: 0, x: 0 },
+        }
+    }
+}
+// WARN These maps should never ever be modified except during the init phase
+static mut SECTOR_MASK: [NewMap; NB_SECTORS] = [NewMap::new(); NB_SECTORS];
+static mut TORPEDO_RANGE_MAP: OffCenteredMap = OffCenteredMap::new();
+static mut TORPEDO_SIDE_HIT_MAP: OffCenteredMap = OffCenteredMap::new();
+static mut SILENCE_RANGE_MAP: OffCenteredMap = OffCenteredMap::new();
+// TODO Call this in the main
+unsafe fn init_game_maps() {
+    // Map sectors
+    for (i, map) in SECTOR_MASK.iter_mut().enumerate() {
+        let sector_x = i % 3;
+        let sector_y = i / 3;
+        for y in sector_y * SECTOR_SIZE..((sector_y + 1) * SECTOR_SIZE) {
+            for x in sector_x * SECTOR_SIZE..((sector_x + 1) * SECTOR_SIZE) {
+                map.set(Pos { x, y }, true);
+            }
+        }
+    }
+
+    // Torpedo range
+    TORPEDO_RANGE_MAP.offset = Pos { y: 4, x: 4 };
+    for y in 0..9 {
+        for x in 0..9 {
+            let pos = Pos { x, y };
+            if pos.dist(&TORPEDO_RANGE_MAP.offset) <= 4 {
+                TORPEDO_RANGE_MAP.map.set(pos, true);
+            }
+        }
+    }
+
+    // Torpedo side hit
+    TORPEDO_SIDE_HIT_MAP.offset = Pos { y: 1, x: 1 };
+    for y in 0..3 {
+        for x in 0..3 {
+            let pos = Pos { x, y };
+            if y != 1 || x != 1 {
+                TORPEDO_RANGE_MAP.map.set(pos, true);
+            }
+        }
+    }
+
+    // Silence
+    SILENCE_RANGE_MAP.offset = Pos { y: 1, x: 1 };
+    for i in 0..(4 * 2 + 1) {
+        SILENCE_RANGE_MAP.map.set(Pos { y: 4, x: i }, true);
+        SILENCE_RANGE_MAP.map.set(Pos { y: i, x: 4 }, true);
+    }
+}
+
+// =======================================================================
+// Game data
+// =======================================================================
+// -----------------------------------------------------------------------
+// PosMap
+// -----------------------------------------------------------------------
+#[derive(Debug, Clone, PartialEq)]
+enum FuzzyPos {
+    Exact(Pos),
+    Area(NewMap),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PosData {
+    // Internal context
+    water_map: NewMap,
+
+    // Variables
+    pos: FuzzyPos,
+
+    // TODO Add forbidden path proccessing
+    forbidden_map: NewMap,
+    last_moves_since_lost: Vec<Direction>,
+}
+
+impl PosData {
+    fn new(water_map: NewMap) -> Self {
+        Self {
+            water_map,
+            pos: FuzzyPos::Area(water_map),
+            forbidden_map: !water_map,
+            last_moves_since_lost: vec![],
+        }
+    }
+
+    fn analyse_action(&mut self, action: &OppAction) {
+        unsafe {
+            let mut new_pos = None;
+            match &mut self.pos {
+                FuzzyPos::Area(map) => {
+                    match action {
+                        OppAction::Move(dir) => {
+                            map.shift(&dir, 1);
+                            *map &= self.water_map;
+                        }
+                        OppAction::Surface(sector) => {
+                            *map &= SECTOR_MASK[*sector];
+                        }
+                        OppAction::Torpedo(pos) => {
+                            let shift = pos.isub(&TORPEDO_RANGE_MAP.offset);
+                            let mask = TORPEDO_RANGE_MAP.map.clone().ipos_shift(shift);
+                            *map &= mask;
+                        }
+                        OppAction::Silence => {
+                            map.compose(&SILENCE_RANGE_MAP.map, &SILENCE_RANGE_MAP.offset);
+                        }
+                        OppAction::Sonar(_) => (),
+                    }
+                    if map.count(true) == 1 {
+                        new_pos = Some(FuzzyPos::Exact(map.first_match(true).unwrap()));
+                    }
+                }
+                FuzzyPos::Exact(pos) => match action {
+                    OppAction::Move(dir) => {
+                        let new_pos = dir.apply(&pos).unwrap();
+                        pos.y = new_pos.y;
+                        pos.x = new_pos.x;
+                    }
+                    OppAction::Surface(_) => (),
+                    OppAction::Torpedo(_) => (),
+                    OppAction::Silence => {
+                        let mut map = SILENCE_RANGE_MAP.map;
+                        map.ipos_shift(pos.isub(&SILENCE_RANGE_MAP.offset));
+                        // TODO Add known forbidden path constraint
+                        map &= self.water_map;
+
+                        new_pos = Some(FuzzyPos::Area(map));
+                    }
+                    OppAction::Sonar(_) => (),
+                },
+            }
+            if let Some(pos) = new_pos {
+                self.pos = pos;
+            }
+        }
+    }
+    fn analyse_actions(&mut self, actions: &[OppAction]) {
+        actions
+            .iter()
+            .for_each(|action| self.analyse_action(action));
+    }
+
+    // TODO Add support for self successful torpedo processing
 }
 
 // -----------------------------------------------------------------------
@@ -588,6 +963,75 @@ impl OppPlayer {
             sonar: cooldown::SONAR,
             silence: cooldown::SILENCE,
             mine: cooldown::MINE,
+        }
+    }
+}
+
+// -----------------------------------------------------------------------
+// MeAction
+// -----------------------------------------------------------------------
+#[derive(Debug, Clone, PartialEq)]
+enum MeAction {
+    Move { dir: Direction, sys: System },
+    Surface,
+    Torpedo(Pos),
+    Sonar(usize),
+    Silence { dir: Direction, dist: usize },
+}
+impl std::fmt::Display for MeAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                MeAction::Move { dir, sys } => format!("MOVE {} {}", dir, sys),
+                MeAction::Surface => "SURFACE".to_string(),
+                MeAction::Torpedo(Pos { y, x }) => format!("TORPEDO {} {}", x, y),
+                MeAction::Sonar(sector) => format!("SONAR {}", sector),
+                MeAction::Silence { dir, dist } => format!("SILENCE {} {}", dir, dist),
+            }
+        )
+    }
+}
+
+impl MeAction {
+    fn into_opp_action(&self, current_sector: usize) -> OppAction {
+        match self {
+            MeAction::Move { dir, .. } => OppAction::Move(*dir),
+            MeAction::Surface => OppAction::Surface(current_sector),
+            MeAction::Torpedo(pos) => OppAction::Torpedo(*pos),
+            MeAction::Sonar(sector) => OppAction::Sonar(*sector),
+            MeAction::Silence { .. } => OppAction::Silence,
+        }
+    }
+}
+
+// -----------------------------------------------------------------------
+// OppAction
+// -----------------------------------------------------------------------
+#[derive(Debug, Clone, PartialEq)]
+enum OppAction {
+    Move(Direction),
+    Surface(usize),
+    Torpedo(Pos),
+    Sonar(usize),
+    Silence,
+}
+impl OppAction {
+    fn parse(s: &str) -> Self {
+        eprintln!("XXX: Action parse: {}", s);
+        let mut words: Vec<_> = s.split(' ').collect();
+        let cmd = words.remove(0);
+        match cmd {
+            "MOVE" => OppAction::Move(Direction::parse(words[0])),
+            "SURFACE" => OppAction::Surface(parse_input!(words[0], usize)),
+            "TORPEDO" => OppAction::Torpedo(Pos {
+                x: parse_input!(words[0], usize),
+                y: parse_input!(words[1], usize),
+            }),
+            "SONAR" => OppAction::Sonar(parse_input!(words[0], usize)),
+            "SILENCE" => OppAction::Silence,
+            x => panic!("{}", x),
         }
     }
 }
